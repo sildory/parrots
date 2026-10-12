@@ -1,0 +1,105 @@
+# .github/workflows/render.yml: рендер ролика на GitHub Actions.
+# Кадры делятся на 6 шардов по 120 кадров, шарды идут параллельно (каждый рендерит свой диапазон
+# и кодирует его в часть). Отдельные задачи: звук и сборка. Итог — артефакт video.mp4 (30 с, 24 к/с).
+name: render
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: 'Подкадров на кадр: размытие движения и сглаживание краёв (по умолчанию 4)'
+        required: false
+        default: '4'
+      scale:
+        description: '1 — 1080×1920; 0.25 — быстрый пробный прогон'
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  audio:
+    name: звук
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Синтез звука
+        run: node scripts/audio.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio
+          path: out/audio.wav
+          retention-days: 3
+
+  frames:
+    name: кадры, шард ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    env:
+      SAMPLES: ${{ inputs.samples || '4' }}
+      SCALE: ${{ inputs.scale || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Зависимости (three.js и Playwright)
+        run: npm install
+      - name: Кэш браузера Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.49.0
+      - name: Chromium для Playwright
+        run: npx playwright install --with-deps chromium
+      - name: ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+      - name: Кадры шарда и кодирование части
+        run: |
+          FROM=$(( ${{ matrix.shard }} * 120 ))
+          TO=$(( FROM + 120 ))
+          node scripts/render.mjs --from "$FROM" --to "$TO" --part "part-0${{ matrix.shard }}" \
+            --samples "$SAMPLES" --scale "$SCALE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-0${{ matrix.shard }}
+          path: out/parts/part-0${{ matrix.shard }}.mp4
+          retention-days: 3
+
+  assemble:
+    name: сборка видео
+    needs: [audio, frames]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          path: out/parts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: audio
+          path: out
+      - name: Склейка частей и звук
+        run: node scripts/render.mjs --join
+      - uses: actions/upload-artifact@v4
+        with:
+          name: video
+          path: out/video.mp4
+          retention-days: 14
