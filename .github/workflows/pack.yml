@@ -1,0 +1,25 @@
+name: Pack code
+on: [workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  pack:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Упаковка репозитория в один файл
+        run: npx --yes repomix --output repomix-output.txt
+      - name: Диагностика — какие файлы созданы
+        if: always()
+        run: ls -la
+      - name: Создание релиза и загрузка файла
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="pack-$(date +'%Y%m%d-%H%M%S')"
+          gh release create "$TAG_NAME" repomix-output.txt \
+          --title "Pack code $TAG_NAME" \
+          --notes "Сгенерировано автоматически с помощью Repomix" 
